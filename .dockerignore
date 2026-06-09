@@ -1,0 +1,64 @@
+# ============================================================
+# NEXUS – Docker-Ignore
+# Was NICHT ins Docker-Image kopiert wird
+# ============================================================
+
+# Git
+.git
+.gitignore
+.github
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Virtuelle Umgebungen
+venv/
+env/
+.venv/
+*.egg-info/
+
+# Generierte Reports (werden via Volume gemountet)
+nexus_reports/
+*.html
+*.pdf
+
+# Datenbanken (werden via Volume persistiert)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Audio / TTS (nicht für Server benötigt)
+*.mp3
+*.wav
+*.ogg
+
+# Secrets
+.env
+*.key
+*.pem
+*.p12
+
+# Windows-spezifisch
+*.bat
+*.ps1
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Docker selbst
+Dockerfile*
+docker-compose*
+.dockerignore

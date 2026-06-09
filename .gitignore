@@ -1,0 +1,76 @@
+# ============================================================
+# NEXUS .gitignore
+# ============================================================
+
+# API-Keys und Passwörter - NIEMALS committen!
+config.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtuelle Umgebungen
+venv/
+env/
+.venv/
+
+# Datenbanken (lokale Laufdaten)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Logs
+*.log
+logs/
+
+# Betriebssystem
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Temporäre Dateien
+*.tmp
+*.temp
+
+# Telegram Session (NIEMALS committen - Zugang zu deinem Account!)
+*.session
+*.session-journal
+nexus_telegram_session*
+
+# Laufdaten und generierte Ausgaben
+nexus_longtest_daten/
+nexus_lagebild_*.html
+nexus_lagebild_*/
+nexus_report_*.html
+nexus_report_*.pdf
+nexus_reports/
+nexus_ukraine_*.html
+nexus_*.db
+nexus_viirs_baseline.db
+nexus_ema_state.json
+nexus_backtest_report.html
+nexus_diag_results.*
+nexus_groundtruth.json
+
+# Debug-Ausgaben
+sar_debug_*.png
+
+# Linux temporäre Dateien
+.fuse_hidden*
+
+# Persönliche Dokumente
+*.private.md
+*.private.docx
+private/
+_private/

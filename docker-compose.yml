@@ -1,0 +1,130 @@
+# ============================================================
+# NEXUS OSINT – Docker Compose Stack
+# ============================================================
+#
+# Schnellstart:
+#   1. cp .env.example .env      → API-Keys eintragen
+#   2. docker compose up -d      → im Hintergrund starten
+#   3. Browser: http://localhost:5050/?q=Ukraine
+#
+# Befehle:
+#   docker compose up -d         → starten
+#   docker compose down          → stoppen
+#   docker compose logs -f       → Logs live
+#   docker compose restart       → neu starten
+#   docker compose pull && docker compose up -d  → Update
+#
+# Tagesbericht:
+#   docker compose exec nexus python nexus_daily.py
+#   docker compose exec nexus python nexus_daily.py --email
+# ============================================================
+
+services:
+
+  nexus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus-osint:latest
+    container_name: nexus-osint
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    environment:
+      # ── Server ──────────────────────────────────────────
+      - NEXUS_PORT=5050
+      - NEXUS_HOST=0.0.0.0
+      - PYTHONUNBUFFERED=1
+
+      # ── SICHERHEIT ──────────────────────────────────────
+      # PFLICHT wenn NEXUS_HOST=0.0.0.0 (netzwerk-exponiert)!
+      # Setze einen langen, zufälligen Token, z.B.:
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      # Dann in .env: NEXUS_TOKEN=dein-geheimer-token
+      - NEXUS_TOKEN=${NEXUS_TOKEN:-}
+
+      # Copernicus/Sentinel-2 Secrets (NIEMALS direkt hier eintragen – .env verwenden!)
+      - COPERNICUS_CLIENT_ID=${COPERNICUS_CLIENT_ID:-}
+      - COPERNICUS_CLIENT_SECRET=${COPERNICUS_CLIENT_SECRET:-}
+
+      # ── API-Keys (alternativ: .env Datei verwenden) ─────
+      # ACLED (kostenlos: https://acleddata.com/register/)
+      - ACLED_KEY=${ACLED_KEY:-}
+      - ACLED_EMAIL=${ACLED_EMAIL:-}
+
+      # AISStream (kostenlos: https://aisstream.io/)
+      - AISSTREAM_KEY=${AISSTREAM_KEY:-}
+
+      # Copernicus/Sentinel-2 (kostenlos: https://dataspace.copernicus.eu/)
+      - COPERNICUS_CLIENT_ID=${COPERNICUS_CLIENT_ID:-}
+      - COPERNICUS_CLIENT_SECRET=${COPERNICUS_CLIENT_SECRET:-}
+
+      # Email/SMTP für Tagesbericht
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_TO=${SMTP_TO:-}
+
+      # Optional: OpenWeather (Wetter-Backup)
+      - OPENWEATHER_KEY=${OPENWEATHER_KEY:-}
+
+    volumes:
+      # Persistente Daten (SQLite-DBs, Reports)
+      - nexus-data:/data
+      # Reports im Host-Verzeichnis zugänglich machen
+      - ./nexus_reports:/app/nexus_reports
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Optionaler Tagesbericht-Cron ────────────────────────
+  # Sendet täglich 07:00 UTC einen Bericht per Email.
+  # Nur aktivieren wenn SMTP_USER + SMTP_PASSWORD gesetzt.
+  nexus-cron:
+    image: nexus-osint:latest
+    container_name: nexus-cron
+    restart: unless-stopped
+    profiles: ["cron"]   # nur mit: docker compose --profile cron up -d
+    depends_on:
+      nexus:
+        condition: service_healthy
+    environment:
+      - ACLED_KEY=${ACLED_KEY:-}
+      - ACLED_EMAIL=${ACLED_EMAIL:-}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_TO=${SMTP_TO:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - nexus-data:/data
+      - ./nexus_reports:/app/nexus_reports
+    # Läuft täglich 07:00 UTC (via Python-Schleife, kein separates cron nötig)
+    command: >
+      python -c "
+      import time, subprocess, datetime
+      print('NEXUS Cron: Warte auf 07:00 UTC...')
+      while True:
+          now = datetime.datetime.utcnow()
+          if now.hour == 7 and now.minute == 0:
+              print(f'[{now}] Starte Tagesbericht...')
+              subprocess.run(['python', 'nexus_daily.py', '--email'], check=False)
+              time.sleep(61)  # Verhindert Doppelaufruf
+          time.sleep(30)
+      "
+
+volumes:
+  nexus-data:
+    driver: local
