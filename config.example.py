@@ -90,6 +90,11 @@ FIRMS_MAP_KEY = ""   # z.B. "abc123def456"
 # Registrierung: https://aisstream.io/account
 AISSTREAM_KEY = ""   # z.B. "88bf75d0b152..."
 
+# Global Fishing Watch - Dark Ships, STS-Transfers, Loitering (kostenlos)
+# Registrierung: https://globalfishingwatch.org/our-apis/
+# Deckt Dark Vessels (kein AIS) + Ship-to-Ship-Transfers in Hormuz/Rotes Meer ab
+GLOBALFISHINGWATCH_KEY = ""   # z.B. "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+
 # ====================================================
 # ACLED - Konfliktereignisse mit GPS (Research-Zugang)
 # ====================================================
@@ -113,6 +118,9 @@ N2YO_API_KEY = ""   # z.B. "XXXXXX-XXXXXX-XXXXXX-XXXXXX"
 # ====================================================
 # MARINETRAFFIC - Schiffsdaten (optional, kostenpflichtig)
 # ====================================================
+# Key beantragen: marinetraffic.com/en/p/api → Free Plan
+# Cache-Strategie: max. 28 API-Calls/Monat (ca. 1/Tag), 24h SQLite-Cache
+# Cache-DB: nexus_ais_cache.db (wird automatisch erstellt, NICHT auf GitHub)
 MARINETRAFFIC_KEY = ""
 VESSELFINDER_KEY  = ""
 
@@ -151,6 +159,22 @@ WATCHLIST_ALERT_SCORE  = 65    # Eskalations-Score ab dem ein Alert ausgeloest w
 PINNED_REGION          = "Ukraine"
 AUTO_LAGE_ON_START     = True
 REPORT_REFRESH_MINUTES = 15
+
+# ====================================================
+# NTFY PUSH-ALERTS (optional, siehe nexus_push.py)
+# ====================================================
+NTFY_TOPIC = ""   # z.B. "nexus-alerts-2847" (zufaellig waehlen, wie ein Passwort)
+
+# ====================================================
+# LIVE-SERVER / BERICHTS-LINKS (nexus_live_server.py, nexus_selftest.py)
+# ====================================================
+# Nur relevant, wenn der Server dauerhaft laeuft (z.B. als systemd-Service
+# auf dem VPS) und Berichte/Karten per Browser/Handy erreichbar sein sollen.
+# Lokal (nur localhost) koennen diese leer bleiben.
+NEXUS_HOST   = ""   # z.B. "0.0.0.0" fuer Erreichbarkeit von aussen (VPS)
+NEXUS_PORT   = ""   # Default 11430, falls leer
+NEXUS_SCHEME = ""   # "http" oder "https" (Default "http")
+NEXUS_TOKEN  = ""   # Pflicht, wenn NEXUS_HOST != localhost — Zugriffsschutz
 
 # ====================================================
 # NEXUS LLM-PROVIDER (NEU: Claude API Support)

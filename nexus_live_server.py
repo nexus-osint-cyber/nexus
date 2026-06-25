@@ -22,6 +22,12 @@ def set_last_report(path: str) -> None:
     global _last_report_path
     _last_report_path = path
 
+# Ordner mit den von nexus_daily.py / nexus_selftest.py erzeugten Berichten.
+# Eigener, dauerhafter Prozess (dieser Server) liefert Berichte aus, die ein
+# *anderer*, kurzlebiger Cron-Prozess (nexus_daily.py) zuvor auf die Platte
+# geschrieben hat — deshalb über den Ordner, nicht über das In-Memory-_last_report_path.
+_REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nexus_reports")
+
 
 # ── Watchlist JSON-Store (T93) ───────────────────────────────────────────────
 _WL_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -509,6 +515,84 @@ loadAll();
 _cache: dict[str, dict] = {}
 _cache_lock = threading.Lock()
 
+# ── Hintergrund-Pipeline ──────────────────────────────────────────────────────
+# Wenn Cache leer ist, Pipeline im Background-Thread starten + sofort Stub liefern
+_bg_running: set[str] = set()
+_bg_lock    = threading.Lock()
+
+def _EMPTY_STUB() -> dict:
+    """Minimal-Antwort wenn Pipeline noch läuft (kein Cache-Treffer)."""
+    return {
+        "loading": True,
+        "status":  "loading",
+        "from_cache": False,
+        "ais":             {"vessels": [], "vanishing_vessels": [], "vessel_count": 0},
+        "ais_vessels":     [],
+        "vanished_vessels":[],
+        "flights":         {"aircraft": [], "vanishing_aircraft": [], "aircraft_list": []},
+        "vanished_aircraft":[],
+        "gdelt_events":    [],
+        "acled":           [],
+        "acled_events":    [],
+        "gdacs_events":    [],
+        "nuclear_sites":   [],
+        "ransomware_events": [],
+        "incidents":       [],
+        "fires":           [],
+        "seismic_events":  [],
+        "notam_data":      [],
+        "gpsjam":          [],
+        "lightning":       [],
+        "fusion_events":   [],
+        "fusion_threats":  [],
+        "humint_data":     [],
+        "humint_markers":  [],
+        "vision_data":     [],
+        "geo_data":        [],
+        "movement_data":   [],
+        "webcam_data":     [],
+        "sar_data":        [],
+        "naval_data":      [],
+        "milflights":      [],
+        "patrol_anomalies":[],
+        "hf_data":         [],
+        "draught_alerts":  [],
+        "radiation_data":  [],
+        "eonet_events":    [],
+        "viirs_dark":      [],
+        "health_alerts":   [],
+        "sanctions_hits":  [],
+        "bgp_anomalies":   [],
+        "displacement":    [],
+        "escalation":      {"score": 0, "level": "UNBEKANNT", "icon": "⟳"},
+        "telegram_surges": [],
+        "satellite_passes":[],
+        "economics":       {},
+        "timestamp":       "⟳ Pipeline läuft…",
+    }
+
+def _bg_start_pipeline(query: str) -> None:
+    """Startet _fetch_live_data() im Hintergrund-Thread (nur 1× pro Query)."""
+    q = query.lower()
+    with _bg_lock:
+        if q in _bg_running:
+            return          # Läuft bereits – nichts doppelt starten
+        _bg_running.add(q)
+
+    def _run():
+        try:
+            data = _fetch_live_data(query)
+            _set_cache(query, data)
+        except Exception as _e:
+            import sys
+            print(f"[BG-Pipeline] Fehler für '{query}': {_e}", file=sys.stderr)
+        finally:
+            with _bg_lock:
+                _bg_running.discard(q)
+
+    t = threading.Thread(target=_run, name=f"bg-pipeline-{q}", daemon=True)
+    t.start()
+
 # ── Transponder/AIS-Off Detektion ──────────────────────────────────────────────
 # Flugzeug-Snapshots pro Query
 _aircraft_snapshots: dict[str, dict[str, dict]] = {}
@@ -955,7 +1039,9 @@ def _fetch_live_data(query: str) -> dict:
     try:
         from nexus_ais import vessels_for_map  # type: ignore
         result["ais_vessels"] = vessels_for_map(geo_region)
-    except Exception:
+    except Exception as _e:
+        import sys as _sys
+        print(f"[AIS-Server] Fehler: {_e}", file=_sys.stderr)
         result["ais_vessels"] = []
 
     # 7b. AIS-Dark Detektion (Schiffe die vom Radar verschwinden)
@@ -1016,6 +1102,13 @@ def _fetch_live_data(query: str) -> dict:
     except Exception:
         result["vanished_vessels"] = []
 
+    # result["ais"] mit echten Daten befüllen (JS liest d.ais.vessels)
+    result["ais"] = {
+        "vessels":           result.get("ais_vessels", []),
+        "vanishing_vessels": result.get("vanished_vessels", []),
+        "vessel_count":      len(result.get("ais_vessels", [])),
+    }
+
     _set_step(8)
     # 8. Erdbeben (USGS)
     try:
@@ -1041,12 +1134,15 @@ def _fetch_live_data(query: str) -> dict:
         result["fires"] = []
 
     _set_step(11)
-    # 11. ACLED Konfliktereignisse mit GPS (benötigt ACLED_KEY in config.py)
+    # 11. ACLED/UCDP Konfliktereignisse mit GPS (ACLED 403 → UCDP-Fallback)
     try:
         from nexus_acled import acled_for_map  # type: ignore
-        result["acled"] = acled_for_map(geo_region, days=14)
+        _acled_pts = acled_for_map(geo_region, days=14)
+        result["acled"]        = _acled_pts  # für Heatmap (nexus_livemap updateHeatmap)
+        result["acled_events"] = _acled_pts  # für Marker (nexus_livemap rAcled)
     except Exception:
-        result["acled"] = []
+        result["acled"]        = []
+        result["acled_events"] = []
 
     _set_step(12)
     # 12. NASA EONET – Naturereignisse (kostenlos, kein Key)
@@ -1055,6 +1151,27 @@ def _fetch_live_data(query: str) -> dict:
         result["eonet"] = eonet_for_map(geo_region)
     except Exception:
         result["eonet"] = []
+
+    # 12b. GDACS – UN OCHA Katastrophenwarnungen (kostenlos, kein Key)
+    try:
+        from nexus_gdacs import fetch_gdacs_events  # type: ignore
+        result["gdacs_events"] = fetch_gdacs_events(geo_region, days=365)
+    except Exception:
+        result["gdacs_events"] = []
+
+    # 12c. Nuklearanlagen-Karte (statische IAEA-Daten, kein Key)
+    try:
+        from nexus_nuclear import nuclear_for_map  # type: ignore
+        result["nuclear_sites"] = nuclear_for_map(geo_region, include_shutdown=False)
+    except Exception:
+        result["nuclear_sites"] = []
+
+    # 12d. Ransomware-Opfer (opt-in: RANSOMWARE_LIVE_ENABLED = True in config.py)
+    try:
+        from nexus_ransomware import fetch_ransomware_events  # type: ignore
+        result["ransomware_events"] = fetch_ransomware_events(geo_region, days=30)
+    except Exception:
+        result["ransomware_events"] = []
 
     _set_step(13)
     # 13. Satellit-Ueberflug-Timer
@@ -1596,6 +1713,15 @@ def _fetch_live_data(query: str) -> dict:
         result["darkweb_alerts"]  = []
         result["darkweb_summary"] = {}
 
+    # ── AIS-Daten in die von der Livekarte erwartete Struktur verpacken ─────────
+    # nexus_livemap.js liest: d.ais.vessels  und  d.ais.vanishing_vessels
+    # Ohne dieses Mapping kommen Schiffe NIEMALS auf der Karte an!
+    result["ais"] = {
+        "vessels":           result.get("ais_vessels", []),
+        "vanishing_vessels": result.get("vanished_vessels", []),
+        "vessel_count":      len(result.get("ais_vessels", [])),
+    }
+
     # Pipeline abgeschlossen
     with _pstatus_lock:
         _pipeline_status.update({
@@ -2003,6 +2129,11 @@ class _NexusHandler(BaseHTTPRequestHandler):
                     "/delta", "/watchlist", "/report", "/linkmap", "/modules",
                     "/maritime", "/source_health"}
 
+    def _is_browser_route(self, path: str) -> bool:
+        """True für Routen, die bei fehlendem Token zur Login-Seite umleiten
+        sollen (Browser/Handy-Aufruf), statt eine rohe 401-JSON-Antwort zu senden."""
+        return path in self._PAGE_ROUTES or path.startswith("/reports/")
+
     def do_GET(self):
         parsed = urlparse(self.path)
         qs     = parse_qs(parsed.query)
@@ -2020,7 +2151,7 @@ class _NexusHandler(BaseHTTPRequestHandler):
             return
 
         if not self._check_token():
-            if parsed.path in self._PAGE_ROUTES:
+            if self._is_browser_route(parsed.path):
                 # Seite → Login-Seite anzeigen
                 self.send_response(302)
                 self.send_header("Location", f"/login?next={parsed.path}")
@@ -2043,13 +2174,10 @@ class _NexusHandler(BaseHTTPRequestHandler):
                 cached["from_cache"] = True
                 self._send_json(cached)
                 return
-            try:
-                data = _fetch_live_data(query)
-                _set_cache(query, data)
-                data["from_cache"] = False
-                self._send_json(data)
-            except Exception as e:
-                self._safe_error(e)
+            # Kein Cache: Pipeline im Hintergrund starten, sofort Stub liefern
+            # → Browser-Timeout wird nie ausgelöst (Report hat 15s Timeout!)
+            _bg_start_pipeline(query)
+            self._send_json(_EMPTY_STUB())
 
         elif parsed.path == "/api/status":
             # Pipeline-Fortschritts-Endpoint für den Lade-Balken im Dashboard
@@ -2295,6 +2423,46 @@ class _NexusHandler(BaseHTTPRequestHandler):
             else:
                 body = b"<h2>Kein Report vorhanden. NEXUS Lagebild zuerst starten (L).</h2>"
                 self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        elif parsed.path.startswith("/reports/"):
+            # T-NTFY-Report: einzelnen, namentlich per NTFY-Link verschickten
+            # Bericht ausliefern (z.B. von nexus_selftest.py/nexus_daily.py
+            # erzeugte Cron-Berichte, NICHT nur den zuletzt erzeugten).
+            # Nur Basisname zulassen — kein Path-Traversal über ../.
+            raw_name  = parsed.path[len("/reports/"):]
+            safe_name = os.path.basename(raw_name)
+            ext_ok    = safe_name.lower().endswith((".html", ".pdf"))
+            file_path = os.path.join(_REPORTS_DIR, safe_name)
+            if (
+                ext_ok
+                and safe_name
+                and os.path.commonpath([os.path.abspath(file_path), os.path.abspath(_REPORTS_DIR)])
+                    == os.path.abspath(_REPORTS_DIR)
+                and os.path.isfile(file_path)
+            ):
+                try:
+                    is_pdf = safe_name.lower().endswith(".pdf")
+                    mode   = "rb" if is_pdf else "r"
+                    with open(file_path, mode, **({} if is_pdf else {"encoding": "utf-8"})) as f:
+                        content = f.read()
+                    body = content if is_pdf else content.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header(
+                        "Content-Type",
+                        "application/pdf" if is_pdf else "text/html; charset=utf-8",
+                    )
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as e:
+                    self._safe_error(e)
+            else:
+                body = b"<h2>Bericht nicht gefunden.</h2>"
+                self.send_response(404)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -2723,72 +2891,4 @@ def _print_startup_diagnostics() -> None:
     checks = [
         ("AIS Schiffe",      getattr(config, "AISSTREAM_KEY",     ""),
          "aisstream.io/account → kostenlos → config.py: AISSTREAM_KEY"),
-        ("FIRMS Brände",     getattr(config, "FIRMS_MAP_KEY",     ""),
-         "firms.modaps.eosdis.nasa.gov → kostenlos → config.py: FIRMS_MAP_KEY"),
-        ("ACLED",            getattr(config, "ACLED_EMAIL",        ""),
-         "acleddata.com → Research-Tier → config.py: ACLED_EMAIL + ACLED_PASSWORD"),
-        ("DeepL Übersetzung",getattr(config, "DEEPL_API_KEY",     ""),
-         "www.deepl.com/pro-api → Free-Tier → config.py: DEEPL_API_KEY"),
-        ("OpenAI / GPT",     getattr(config, "OPENAI_API_KEY",    ""),
-         "platform.openai.com → config.py: OPENAI_API_KEY"),
-        ("Anthropic Claude", getattr(config, "ANTHROPIC_API_KEY", ""),
-         "console.anthropic.com → config.py: ANTHROPIC_API_KEY"),
-        ("n2yo Satelliten",  getattr(config, "N2YO_API_KEY",      ""),
-         "n2yo.com/api.php → kostenlos → config.py: N2YO_API_KEY"),
-        ("Copernicus",       getattr(config, "COPERNICUS_CLIENT_ID", ""),
-         "dataspace.copernicus.eu → kostenlos → config.py: COPERNICUS_CLIENT_ID"),
-    ]
-
-    any_missing = False
-    for name, val, hint in checks:
-        if val:
-            print(f"  {GREEN}✓{RESET} {name}", flush=True)
-        else:
-            print(f"  {YELLOW}○{RESET} {name:<22} — {hint}", flush=True)
-            any_missing = True
-
-    if any_missing:
-        print(f"\n  {YELLOW}Tipp:{RESET} Fehlende Keys in config.py eintragen.", flush=True)
-    print(f"{CYAN}{'─'*55}{RESET}\n", flush=True)
-
-
-def start_server(host: str = "127.0.0.1", port: int = 5000) -> None:
-    """Startet den NEXUS Live-Server im Hintergrund-Thread."""
-    global _server_thread, _httpd
-    if _server_thread and _server_thread.is_alive():
-        return
-    _httpd = ThreadingHTTPServer((host, port), _NexusHandler)
-    _server_thread = threading.Thread(target=_httpd.serve_forever, daemon=True)
-    _server_thread.start()
-    _print_startup_diagnostics()
-    print(f"[NEXUS] Server läuft auf http://{host}:{port}", flush=True)
-    print(f"[NEXUS] Dashboard: http://localhost:{port}/dashboard", flush=True)
-
-
-def stop_server() -> None:
-    """Stoppt den Server."""
-    global _httpd, _server_thread
-    if _httpd:
-        _httpd.shutdown()
-        _httpd = None
-    _server_thread = None
-
-
-def is_running() -> bool:
-    """True wenn der Server-Thread aktiv ist."""
-    return bool(_server_thread and _server_thread.is_alive())
-
-
-if __name__ == "__main__":
-    import argparse as _ap
-    _parser = _ap.ArgumentParser(description="NEXUS Live Server")
-    _parser.add_argument("--host", default="127.0.0.1", help="Bind-Adresse (Standard: nur localhost)")
-    _parser.add_argument("--port", type=int, default=LIVE_PORT, help="TCP-Port")
-    _args = _parser.parse_args()
-    start_server(_args.host, _args.port)
-    try:
-        while True:
-            _time_mod.sleep(1)
-    except KeyboardInterrupt:
-        print("\n[NEXUS] Server gestoppt.", flush=True)
-        stop_server()
+   

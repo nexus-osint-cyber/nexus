@@ -30,6 +30,10 @@ from typing import Optional
 NTFY_BASE_URL  = "https://ntfy.sh"
 REQUEST_TIMEOUT = 8
 
+# Modul-Level-Flag: NTFY-Warnung wird nur einmal pro Python-Session gedruckt.
+# Verhindert, dass jede Score-Überschreitung dieselbe Meldung wiederholt.
+_ntfy_topic_warned: bool = False
+
 # ── Konfig laden ──────────────────────────────────────────────────────────────
 
 def _get_topic() -> str:
@@ -64,29 +68,37 @@ _LEVEL_TO_EMOJI = {
 # ── Kern-Funktion ─────────────────────────────────────────────────────────────
 
 def push_alert(
-    region:  str,
-    score:   float,
-    level:   str,
-    signale: list[str] | None = None,
-    details: str = "",
-    topic:   str = "",
+    region:    str,
+    score:     float,
+    level:     str,
+    signale:   list[str] | None = None,
+    details:   str = "",
+    topic:     str = "",
+    click_url: str = "",
 ) -> bool:
     """
     Sendet einen Push-Alert ans Handy via ntfy.sh.
 
-    region:  z.B. "Iran"
-    score:   z.B. 55.2
-    level:   z.B. "ROT"
-    signale: z.B. ["gps_jamming", "isr_aircraft"]
-    details: optionaler Freitext
-    topic:   ntfy-Topic (überschreibt config.py)
+    region:    z.B. "Iran"
+    score:     z.B. 55.2
+    level:     z.B. "ROT"
+    signale:   z.B. ["gps_jamming", "isr_aircraft"]
+    details:   optionaler Freitext
+    topic:     ntfy-Topic (überschreibt config.py)
+    click_url: optionale URL — Tippen auf die Push-Nachricht öffnet diese
+               Seite direkt (z.B. Link zum fertigen NEXUS-Bericht via
+               nexus_live_server.py: "https://<server>:<port>/reports/<datei>.html?token=...")
 
     Gibt True zurück wenn erfolgreich.
     """
+    global _ntfy_topic_warned
     t = topic or _get_topic()
     if not t:
-        print("[Push] Kein NTFY_TOPIC konfiguriert — bitte in config.py eintragen.",
-              file=sys.stderr)
+        if not _ntfy_topic_warned:
+            print("[Push] NTFY_TOPIC nicht konfiguriert — Push-Alerts deaktiviert. "
+                  "Bitte NTFY_TOPIC = \"dein-topic\" in config.py eintragen.",
+                  file=sys.stderr)
+            _ntfy_topic_warned = True
         return False
 
     emoji  = _LEVEL_TO_EMOJI.get(level, "📡")
@@ -104,20 +116,91 @@ def push_alert(
     if details:
         nachricht += f"\n{details[:200]}"
 
+    if click_url:
+        nachricht += "\n(Tippen für vollen Bericht)"
+
+    url = f"{NTFY_BASE_URL}/{t}"
+    try:
+        headers = {
+            # Title als UTF-8-Bytes kodieren: HTTP-Header werden von requests
+            # sonst als Latin-1 interpretiert, was bei Emojis (z.B. 'ORANGE') zu
+            # "ordinal not in range(256)" fuehrt.
+            "Title":    titel.encode("utf-8"),
+            "Priority": prio,
+            "Tags":     f"warning,{region.lower()}",
+        }
+        if click_url:
+            # ntfy "Click"-Header: Tippen auf die Notification öffnet die URL
+            # direkt im Browser des Handys (keine separate Action-Syntax nötig).
+            headers["Click"] = click_url.encode("utf-8")
+
+        r = requests.post(
+            url,
+            data=nachricht.encode("utf-8"),
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code in (200, 201, 204):
+            print(f"[Push] ✓ Alert gesendet: {titel}", file=sys.stderr)
+            return True
+        else:
+            print(f"[Push] HTTP {r.status_code} für Topic '{t}'", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"[Push] Fehler: {e}", file=sys.stderr)
+        return False
+
+
+def push_report(
+    title:     str,
+    summary:   str,
+    report_url: str,
+    topic:     str = "",
+    level:     str = "GELB",
+) -> bool:
+    """
+    Sendet eine Push-Nachricht mit Link zu einem fertigen NEXUS-Bericht
+    (z.B. der HTML-Tagesbericht aus nexus_daily.py / nexus_selftest.py).
+
+    title:      z.B. "NEXUS Selbsttest: Iran + Ukraine"
+    summary:    kurze Zusammenfassung (max. ~200 Zeichen werden angezeigt)
+    report_url: vollständige URL zum Bericht
+                (https://<server>:<port>/reports/<datei>.html?token=...)
+    topic:      ntfy-Topic (überschreibt config.py)
+    level:      nur für Icon/Priorität, z.B. "GELB"/"ORANGE"/"ROT"
+
+    Gibt True zurück wenn erfolgreich.
+    """
+    global _ntfy_topic_warned
+    t = topic or _get_topic()
+    if not t:
+        if not _ntfy_topic_warned:
+            print("[Push] NTFY_TOPIC nicht konfiguriert — Push-Alerts deaktiviert.",
+                  file=sys.stderr)
+            _ntfy_topic_warned = True
+        return False
+
+    emoji = _LEVEL_TO_EMOJI.get(level, "📄")
+    prio  = _LEVEL_TO_PRIORITY.get(level, "default")
+    jetzt = datetime.now(timezone.utc).strftime("%H:%M UTC")
+
+    nachricht = f"{summary[:200]}\n{jetzt}\n(Tippen für vollen Bericht)"
+
     url = f"{NTFY_BASE_URL}/{t}"
     try:
         r = requests.post(
             url,
             data=nachricht.encode("utf-8"),
             headers={
-                "Title":    titel,
+                "Title":    f"{emoji} {title}".encode("utf-8"),
                 "Priority": prio,
-                "Tags":     f"warning,{region.lower()}",
+                "Tags":     "page_facing_up,report",
+                "Click":    report_url.encode("utf-8"),
             },
             timeout=REQUEST_TIMEOUT,
         )
         if r.status_code in (200, 201, 204):
-            print(f"[Push] ✓ Alert gesendet: {titel}", file=sys.stderr)
+            print(f"[Push] ✓ Bericht gesendet: {title}", file=sys.stderr)
             return True
         else:
             print(f"[Push] HTTP {r.status_code} für Topic '{t}'", file=sys.stderr)
@@ -186,8 +269,9 @@ class PushMonitor:
 
         if schwelle_ueberschritten or signifikante_aenderung:
             ok = push_alert(region, score, level, signale)
-            if ok:
-                self._letzter_alert[region] = jetzt
+            # Cooldown immer setzen – auch bei fehlgeschlagenem Push (kein Topic).
+            # Sonst fehlt der Cooldown und die Meldung feuert jeden Lauf erneut.
+            self._letzter_alert[region] = jetzt
             self._letzter_score[region] = score
             return ok
 
